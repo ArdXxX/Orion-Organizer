@@ -623,6 +623,19 @@ def launch_worker():
             log(f"Error launching client: {e}")
         launch_queue.task_done()
 
+def seleccionar_orion_folder():
+    global orion_path
+    ruta = filedialog.askdirectory(title=tr("BTN_SELECT_ORION"))
+    if not ruta:
+        return
+    if not os.path.exists(os.path.join(ruta, "OrionLauncher.exe")):
+        messagebox.showerror("Error", "OrionLauncher.exe not found in selected folder.")
+        return
+    orion_path = ruta
+    set_orion_path(ruta)
+    actualizar_cmds_orion_en_ventanas()
+    log(tr("LOG_ORION_SET").format(path=ruta))
+
 def monitor_loop():
     global monitoreando
     while monitoreando:
