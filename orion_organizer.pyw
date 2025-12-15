@@ -211,7 +211,8 @@ def cargar_perfil():
             "double_check_seconds": 120,
             "auto_reposition_delay": 20,
             "monitor_interval": 10,
-            "theme": "dark"
+            "theme": "dark",
+            "orion_launcher": "OrionLauncher.exe"
         }
     with open(ruta, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -236,6 +237,7 @@ def cargar_perfil():
     data.setdefault("auto_reposition_delay", 20)
     data.setdefault("monitor_interval", 10)
     data.setdefault("theme", "dark")
+    data.setdefault("orion_launcher", "OrionLauncher.exe")
     return data
 
 def guardar_perfil(perfil_data):
@@ -253,11 +255,52 @@ def guardar_ventanas(ventanas):
 
 def get_orion_path():
     return cargar_perfil().get("orion_path", "")
+    
 
 def set_orion_path(path):
     perfil_data = cargar_perfil()
     perfil_data["orion_path"] = path
     guardar_perfil(perfil_data)
+    
+def get_orion_launcher():
+    # Valor por defecto (32-bit) si no existe en el perfil
+    return cargar_perfil().get("orion_launcher", "OrionLauncher.exe")
+
+def set_orion_launcher(exe_name: str):
+    perfil_data = cargar_perfil()
+    perfil_data["orion_launcher"] = exe_name
+    guardar_perfil(perfil_data)
+
+def detectar_orion_launcher_en_carpeta(ruta: str, interactive: bool = False):
+    """
+    Devuelve 'OrionLauncher64.exe' o 'OrionLauncher.exe' si existe en la carpeta.
+    Si interactive=True y existen ambos, pregunta cuál usar.
+    Si interactive=False y existen ambos, prioriza 64-bit.
+    """
+    exe64 = "OrionLauncher64.exe"
+    exe32 = "OrionLauncher.exe"
+
+    has64 = os.path.exists(os.path.join(ruta, exe64))
+    has32 = os.path.exists(os.path.join(ruta, exe32))
+
+    if not has64 and not has32:
+        return None
+
+    if has64 and not has32:
+        return exe64
+    if has32 and not has64:
+        return exe32
+
+    # Ambos existen
+    if not interactive:
+        return exe64  # preferencia automática
+
+    use64 = messagebox.askyesno(
+        "Selection",
+        "Detected both OrionLauncher64.exe and OrionLauncher.exe.\n\nUse 64-bit launcher?"
+    )
+    return exe64 if use64 else exe32
+
 
 def get_profile_language():
     return cargar_perfil().get("language", "en")
@@ -305,15 +348,18 @@ def actualizar_cmds_orion_en_ventanas():
     global orion_path
     if not orion_path:
         return
+    launcher = get_orion_launcher()
+
     ventanas = cargar_ventanas()
     changed = False
     for v in ventanas:
         perfil = v.get("perfil", "").strip()
         if perfil:
-            v["cmd"] = f'pushd "{orion_path}" && OrionLauncher.exe "-autostart|{perfil}"'
+            v["cmd"] = f'pushd "{orion_path}" && {launcher} "-autostart|{perfil}"'
             changed = True
     if changed:
         guardar_ventanas(ventanas)
+
 
 def ordenar_perfiles_para_menu(current, perfiles):
     otros = sorted([p for p in perfiles if p != current])
@@ -622,19 +668,26 @@ def launch_worker():
         except Exception as e:
             log(f"Error launching client: {e}")
         launch_queue.task_done()
-
+        
 def seleccionar_orion_folder():
     global orion_path
     ruta = filedialog.askdirectory(title=tr("BTN_SELECT_ORION"))
     if not ruta:
         return
-    if not os.path.exists(os.path.join(ruta, "OrionLauncher.exe")):
-        messagebox.showerror("Error", "OrionLauncher.exe not found in selected folder.")
+
+    launcher = detectar_orion_launcher_en_carpeta(ruta, interactive=True)
+    if not launcher:
+        messagebox.showerror("Error", "OrionLauncher.exe / OrionLauncher64.exe not found in selected folder.")
         return
+
     orion_path = ruta
     set_orion_path(ruta)
+    set_orion_launcher(launcher)
+
     actualizar_cmds_orion_en_ventanas()
-    log(tr("LOG_ORION_SET").format(path=ruta))
+    log(tr("LOG_ORION_SET").format(path=ruta) + f" (launcher: {launcher})")
+
+
 
 def monitor_loop():
     global monitoreando
@@ -926,7 +979,9 @@ def abrir_configuracion_cliente():
         perfil_v = entry_perfil.get().strip()
         ventana["perfil"] = perfil_v
         if orion_path and perfil_v:
-            ventana["cmd"] = f'pushd "{orion_path}" && OrionLauncher.exe "-autostart|{perfil_v}"'
+            launcher = get_orion_launcher()
+            ventana["cmd"] = f'pushd "{orion_path}" && {launcher} "-autostart|{perfil_v}"'
+
         try:
             x = int(entry_x.get())
             y = int(entry_y.get())
@@ -1361,9 +1416,21 @@ def crear_gui():
     console.configure(state="disabled")
 
     orion_path_loaded = get_orion_path()
-    if orion_path_loaded and os.path.exists(os.path.join(orion_path_loaded, "OrionLauncher.exe")):
-        globals()["orion_path"] = orion_path_loaded
-        log(tr("LOG_ORION_LOADED").format(path=orion_path_loaded))
+    launcher_loaded = get_orion_launcher()
+
+    if orion_path_loaded:
+        # primero intenta el launcher guardado
+        if os.path.exists(os.path.join(orion_path_loaded, launcher_loaded)):
+            globals()["orion_path"] = orion_path_loaded
+            log(tr("LOG_ORION_LOADED").format(path=orion_path_loaded) + f" (launcher: {launcher_loaded})")
+        else:
+            # fallback silencioso: autodetecta en la carpeta (sin preguntar)
+            detected = detectar_orion_launcher_en_carpeta(orion_path_loaded, interactive=False)
+            if detected and os.path.exists(os.path.join(orion_path_loaded, detected)):
+                set_orion_launcher(detected)
+                globals()["orion_path"] = orion_path_loaded
+                log(tr("LOG_ORION_LOADED").format(path=orion_path_loaded) + f" (launcher: {detected})")
+
 
     apply_language()
     actualizar_listas()
@@ -1374,6 +1441,7 @@ def crear_gui():
     worker_thread.start()
 
     app.mainloop()
+    
 
 if __name__ == "__main__":
     crear_gui()
