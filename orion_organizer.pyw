@@ -518,13 +518,19 @@ def obtener_clientes_orion():
                 hwnd = w._hWnd
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 p = psutil.Process(pid)
-                if p.name().lower() == "orionuo.exe":
+                if es_proceso_orionuo(p.name()):
                     clientes.append(w)
             except Exception:
                 continue
     except Exception:
         pass
     return clientes
+
+def es_proceso_orionuo(process_name: str) -> bool:
+    if not process_name:
+        return False
+    n = process_name.strip().lower()
+    return n in ("orionuo.exe", "orionuo64.exe")
 
 def normalizar_titulo(titulo):
     prefijos = ["Lady ", "Lord "]
