@@ -520,17 +520,19 @@ def obtener_clientes_orion():
                 p = psutil.Process(pid)
                 if es_proceso_orionuo(p.name()):
                     clientes.append(w)
+
             except Exception:
                 continue
     except Exception:
         pass
     return clientes
-
+    
 def es_proceso_orionuo(process_name: str) -> bool:
     if not process_name:
         return False
     n = process_name.strip().lower()
     return n in ("orionuo.exe", "orionuo64.exe")
+
 
 def normalizar_titulo(titulo):
     prefijos = ["Lady ", "Lord "]
@@ -665,15 +667,27 @@ def guardar_posicion_actual():
 
 def launch_worker():
     while True:
-        cmd, auto_repos_delay = launch_queue.get()
+        exe, args, cwd, auto_repos_delay = launch_queue.get()
         try:
-            subprocess.Popen(cmd, shell=True)
-            if auto_repos_delay > 0:
-                threading.Timer(auto_repos_delay, restaurar_posiciones).start()
-            time.sleep(5)  # delay entre lanzamientos
+            exe_path = os.path.join(cwd, exe)
+
+            if not os.path.exists(exe_path):
+                log(f"Launcher not found: {exe_path}")
+            else:
+                subprocess.Popen(
+                    [exe_path, args],
+                    cwd=cwd
+                )
+
+                if auto_repos_delay > 0:
+                    threading.Timer(auto_repos_delay, restaurar_posiciones).start()
+
+            time.sleep(5)
         except Exception as e:
             log(f"Error launching client: {e}")
         launch_queue.task_done()
+
+
         
 def seleccionar_orion_folder():
     global orion_path
@@ -714,13 +728,27 @@ def monitor_loop():
             titulo = item.get("titulo", "")
             if not titulo:
                 continue
-            cmd = item.get("cmd", "")
+
+            cmd = item.get("cmd")  # ahora es dict o None
             shutdown = item.get("shutdown", "")
             startup = item.get("startup", "")
             sched = item.get("schedule_enabled", False)
             missing_ts = item.get("last_missing_at")
             existe, _ = buscar_ventana_flexible(titulo)
 
+            def lanzar_cliente(log_key):
+                if isinstance(cmd, dict):
+                    log(tr(log_key).format(title=titulo))
+                    launch_queue.put((
+                        cmd["exe"],
+                        cmd["args"],
+                        cmd["cwd"],
+                        auto_repos_delay
+                    ))
+                else:
+                    log(tr("LOG_WINDOW_NO_CMD").format(title=titulo))
+
+            # ---------- SCHEDULE ----------
             if sched and shutdown and startup:
                 if en_franja_apagado(shutdown, startup):
                     if existe:
@@ -729,40 +757,39 @@ def monitor_loop():
                         item["last_missing_at"] = None
                         changed = True
                     continue
-                else:
-                    if existe:
-                        if missing_ts is not None:
-                            item["last_missing_at"] = None
-                            changed = True
-                        continue
-                    if not double_enabled:
-                        if cmd:
-                            log(tr("LOG_WINDOW_LAUNCHING_SCHEDULE").format(title=titulo))
-                            launch_queue.put((cmd, auto_repos_delay))
-                        else:
-                            log(tr("LOG_WINDOW_NO_CMD_SCHEDULE").format(title=titulo))
+
+                if existe:
+                    if missing_ts is not None:
                         item["last_missing_at"] = None
                         changed = True
-                        continue
-                    if missing_ts is None:
-                        item["last_missing_at"] = time.time()
-                        log(tr("LOG_WINDOW_NOT_FOUND_START_CHECK").format(title=titulo))
-                        changed = True
-                        continue
-                    elapsed = time.time() - missing_ts
-                    if elapsed < double_seconds:
-                        remaining = int(double_seconds - elapsed)
-                        log(tr("LOG_WINDOW_WAITING_CONFIRM").format(title=titulo, remaining=remaining))
-                        continue
-                    if cmd:
-                        log(tr("LOG_WINDOW_LAUNCHING_SCHEDULE").format(title=titulo))
-                        launch_queue.put((cmd, auto_repos_delay))
-                    else:
-                        log(tr("LOG_WINDOW_NO_CMD_SCHEDULE").format(title=titulo))
+                    continue
+
+                if not double_enabled:
+                    lanzar_cliente("LOG_WINDOW_LAUNCHING_SCHEDULE")
                     item["last_missing_at"] = None
                     changed = True
                     continue
 
+                if missing_ts is None:
+                    item["last_missing_at"] = time.time()
+                    log(tr("LOG_WINDOW_NOT_FOUND_START_CHECK").format(title=titulo))
+                    changed = True
+                    continue
+
+                elapsed = time.time() - missing_ts
+                if elapsed < double_seconds:
+                    remaining = int(double_seconds - elapsed)
+                    log(tr("LOG_WINDOW_WAITING_CONFIRM").format(
+                        title=titulo, remaining=remaining
+                    ))
+                    continue
+
+                lanzar_cliente("LOG_WINDOW_LAUNCHING_SCHEDULE")
+                item["last_missing_at"] = None
+                changed = True
+                continue
+
+            # ---------- NORMAL ----------
             if existe:
                 if missing_ts is not None:
                     item["last_missing_at"] = None
@@ -770,11 +797,7 @@ def monitor_loop():
                 continue
 
             if not double_enabled:
-                if cmd:
-                    log(tr("LOG_WINDOW_LAUNCHING").format(title=titulo))
-                    launch_queue.put((cmd, auto_repos_delay))
-                else:
-                    log(tr("LOG_WINDOW_NO_CMD").format(title=titulo))
+                lanzar_cliente("LOG_WINDOW_LAUNCHING")
                 item["last_missing_at"] = None
                 changed = True
                 continue
@@ -784,16 +807,16 @@ def monitor_loop():
                 log(tr("LOG_WINDOW_NOT_FOUND_START_CHECK").format(title=titulo))
                 changed = True
                 continue
+
             elapsed = time.time() - missing_ts
             if elapsed < double_seconds:
                 remaining = int(double_seconds - elapsed)
-                log(tr("LOG_WINDOW_WAITING_CONFIRM").format(title=titulo, remaining=remaining))
+                log(tr("LOG_WINDOW_WAITING_CONFIRM").format(
+                    title=titulo, remaining=remaining
+                ))
                 continue
-            if cmd:
-                log(tr("LOG_WINDOW_LAUNCHING").format(title=titulo))
-                launch_queue.put((cmd, auto_repos_delay))
-            else:
-                log(tr("LOG_WINDOW_NO_CMD").format(title=titulo))
+
+            lanzar_cliente("LOG_WINDOW_LAUNCHING")
             item["last_missing_at"] = None
             changed = True
 
@@ -801,6 +824,7 @@ def monitor_loop():
             guardar_ventanas(ventanas)
 
         time.sleep(monitor_interval)
+
 
 def toggle_monitoreo():
     global monitoreando, monitor_thread, btn_monitoreo
@@ -986,7 +1010,12 @@ def abrir_configuracion_cliente():
         ventana["perfil"] = perfil_v
         if orion_path and perfil_v:
             launcher = get_orion_launcher()
-            ventana["cmd"] = f'pushd "{orion_path}" && {launcher} "-autostart|{perfil_v}"'
+            ventana["cmd"] = {
+                "exe": launcher,
+                "args": f"-autostart|{perfil_v}",
+                "cwd": orion_path
+            }
+
 
         try:
             x = int(entry_x.get())
@@ -1435,6 +1464,7 @@ def crear_gui():
             if detected and os.path.exists(os.path.join(orion_path_loaded, detected)):
                 set_orion_launcher(detected)
                 globals()["orion_path"] = orion_path_loaded
+                actualizar_cmds_orion_en_ventanas()
                 log(tr("LOG_ORION_LOADED").format(path=orion_path_loaded) + f" (launcher: {detected})")
 
 
